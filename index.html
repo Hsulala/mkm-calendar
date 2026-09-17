@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>MKM 行事曆</title>
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<style>
+  :root {
+    --bg: #FBFBFA;
+    --accent: #F08300;
+    --accent-bg: #FFF4E5;
+    --text: #33383D;
+    --sub: #9AA1A8;
+    --faint: #AEB4BA;
+    --sep: #EEEFF0;
+    --card: #F2F3F4;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif;
+    color: var(--text);
+  }
+  .wrap { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
+  .top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .top button {
+    background: none; border: none; color: var(--sub); font-size: 20px;
+    padding: 4px 10px; cursor: pointer;
+  }
+  .top button:disabled { opacity: .3; cursor: default; }
+  .top .label { font-weight: bold; font-size: 17px; }
+  .viewer { font-size: 12px; color: var(--sub); margin-bottom: 16px; min-height: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+  .wd { text-align: center; font-size: 11px; color: var(--faint); padding: 4px 0; }
+  .cell {
+    aspect-ratio: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: flex-start; padding-top: 6px; border-radius: 8px; cursor: pointer;
+    border: 1.5px solid transparent; background: none;
+  }
+  .cell.out { opacity: .3; }
+  .cell.today .num { color: var(--accent); font-weight: bold; }
+  .cell.today { border-color: var(--accent); }
+  .cell.selected { background: var(--accent-bg); }
+  .num { font-size: 13px; }
+  .dots { height: 10px; display: flex; align-items: center; justify-content: center; gap: 3px; margin-top: 2px; }
+  .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+  .cnt { font-size: 9px; color: var(--faint); }
+  .sep { height: 1px; background: var(--sep); margin: 16px 0; }
+  .day-title { font-size: 14px; font-weight: bold; margin-bottom: 10px; }
+  .ev {
+    display: flex; gap: 10px; padding: 10px 12px; background: var(--card);
+    border-radius: 10px; margin-bottom: 8px; align-items: baseline;
+  }
+  .ev .t { font-size: 12px; color: var(--sub); width: 40px; flex-shrink: 0; }
+  .ev .s { font-size: 13px; color: var(--text); }
+  .empty, .state-msg { font-size: 12px; color: var(--faint); padding: 16px 0; text-align: center; }
+  .state-msg.error { color: #C4554A; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="stateMsg" class="state-msg">載入中...</div>
+  <div id="calendarRoot" style="display:none;">
+    <div class="top">
+      <button id="prevBtn" aria-label="上個月">&#8249;</button>
+      <span class="label" id="monthLabel"></span>
+      <button id="nextBtn" aria-label="下個月">&#8250;</button>
+    </div>
+    <div class="viewer" id="viewerLabel"></div>
+    <div class="grid" id="weekdayRow"></div>
+    <div class="grid" id="dayGrid"></div>
+    <div class="sep"></div>
+    <div>
+      <div class="day-title" id="dayTitle"></div>
+      <div id="dayEvents"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var LIFF_ID = '2007968447-KVIsxGkO';
+  var WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
+
+  var qs = new URLSearchParams(location.search);
+  var token = qs.get('token') || '';
+  var apiBase = qs.get('api') || '';
+
+  var state = { year: null, month: null, eventsByDate: {}, todayKey: '', selectedKey: '' };
+
+  function setMsg(text, isError) {
+    var el = document.getElementById('stateMsg');
+    el.textContent = text;
+    el.className = 'state-msg' + (isError ? ' error' : '');
+    el.style.display = 'block';
+    document.getElementById('calendarRoot').style.display = 'none';
+  }
+
+  function esc(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+  function fmtLabel(key) {
+    var p = key.split('-');
+    var d = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10));
+    return parseInt(p[1], 10) + '/' + parseInt(p[2], 10) + '（' + WEEKDAYS[d.getDay()] + '）';
+  }
+
+  function loadMonth(year, month, mParam) {
+    setMsg('載入中...');
+    var url = apiBase + (apiBase.indexOf('?') >= 0 ? '&' : '?') +
+      'view=calendarData&token=' + encodeURIComponent(token) +
+      (mParam ? '&m=' + encodeURIComponent(mParam) : '');
+
+    fetch(url)
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (data.error) { setMsg(data.error, true); return; }
+        state.year = data.year;
+        state.month = data.month; // 1-indexed
+        state.eventsByDate = data.eventsByDate || {};
+        state.todayKey = data.todayKey;
+        document.getElementById('viewerLabel').textContent = data.viewerLabel || '';
+        renderMonth();
+        document.getElementById('stateMsg').style.display = 'none';
+        document.getElementById('calendarRoot').style.display = 'block';
+      })
+      .catch(function () {
+        setMsg('讀取失敗，請稍後再試一次。', true);
+      });
+  }
+
+  function renderMonth() {
+    var year = state.year, month = state.month - 1; // back to 0-indexed
+    document.getElementById('monthLabel').textContent = year + '年' + (month + 1) + '月';
+
+    var weekdayRow = document.getElementById('weekdayRow');
+    weekdayRow.innerHTML = WEEKDAYS.map(function (w) { return '<div class="wd">' + w + '</div>'; }).join('');
+
+    var first = new Date(year, month, 1);
+    var startDow = first.getDay();
+    var daysInMonth = new Date(year, month + 1, 0).getDate();
+    var totalCells = Math.ceil((startDow + daysInMonth) / 7) * 7;
+
+    var grid = document.getElementById('dayGrid');
+    grid.innerHTML = '';
+    for (var i = 0; i < totalCells; i++) {
+      var d = new Date(year, month, i - startDow + 1);
+      var key = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+      var inMonth = d.getMonth() === month;
+      var isToday = key === state.todayKey;
+      var list = state.eventsByDate[key] || [];
+
+      var cell = document.createElement('div');
+      cell.className = 'cell' + (inMonth ? '' : ' out') + (isToday ? ' today' : '');
+      cell.dataset.key = key;
+      var dotsHtml = '';
+      if (list.length > 0) {
+        dotsHtml = '<div class="dot"></div>' + (list.length > 1 ? '<span class="cnt">' + list.length + '</span>' : '');
+      }
+      cell.innerHTML = '<div class="num">' + d.getDate() + '</div><div class="dots">' + dotsHtml + '</div>';
+      cell.addEventListener('click', function () { selectDay(this.dataset.key); });
+      grid.appendChild(cell);
+    }
+
+    var startKey = state.eventsByDate[state.todayKey] ? state.todayKey :
+      (document.querySelector('.cell.today') ? document.querySelector('.cell.today').dataset.key : state.todayKey);
+    selectDay(startKey);
+  }
+
+  function selectDay(key) {
+    state.selectedKey = key;
+    document.querySelectorAll('.cell').forEach(function (el) { el.classList.remove('selected'); });
+    var target = document.querySelector('.cell[data-key="' + key + '"]');
+    if (target) target.classList.add('selected');
+
+    document.getElementById('dayTitle').textContent = fmtLabel(key);
+    var list = state.eventsByDate[key] || [];
+    var html = '';
+    if (list.length === 0) {
+      html = '<div class="empty">這天沒有安排</div>';
+    } else {
+      list.forEach(function (ev) {
+        html += '<div class="ev"><div class="t">' + esc(ev.time) + '</div><div class="s">' + esc(ev.text) + '</div></div>';
+      });
+    }
+    document.getElementById('dayEvents').innerHTML = html;
+  }
+
+  function goMonth(delta) {
+    var d = new Date(state.year, state.month - 1 + delta, 1);
+    var mParam = d.getFullYear() + '-' + pad2(d.getMonth() + 1);
+    loadMonth(d.getFullYear(), d.getMonth() + 1, mParam);
+  }
+
+  document.getElementById('prevBtn').addEventListener('click', function () { goMonth(-1); });
+  document.getElementById('nextBtn').addEventListener('click', function () { goMonth(1); });
+
+  function start() {
+    if (!token || !apiBase) {
+      setMsg('連結無效，請重新透過 LINE 取得月曆連結。', true);
+      return;
+    }
+    loadMonth(null, null, '');
+  }
+
+  if (window.liff) {
+    liff.init({ liffId: LIFF_ID }).then(start).catch(function () {
+      // 在 LIFF 環境外（例如直接用瀏覽器開）liff.init 可能失敗，仍嘗試照常運作
+      start();
+    });
+  } else {
+    start();
+  }
+})();
+</script>
+</body>
+</html>
